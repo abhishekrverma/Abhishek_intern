@@ -1,27 +1,26 @@
 import sqlite3
-import pandas as pd
 import os
 
 # Configuration
-CSV_FILE = 'data/master_dataset.csv'
 DB_FILE = 'student_system.db'
 
 def init_database():
     print("📦 Initializing Database...")
     
-    # 1. Load the CSV Data
-    if not os.path.exists(CSV_FILE):
-        print(f"❌ Error: {CSV_FILE} not found. Run process_data.py first.")
-        return
-    
-    df = pd.read_csv(CSV_FILE)
-    
-    # 2. Connect to SQLite (Creates file if missing)
+    # Connect to SQLite (Creates file if missing)
     conn = sqlite3.connect(DB_FILE)
     cursor = conn.cursor()
     
-    # 3. Create Table Schema
-    # We store the raw data. The Risk prediction happens LIVE.
+    # 1. Users table for authentication
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            username TEXT PRIMARY KEY,
+            password TEXT,
+            role TEXT
+        )
+    ''')
+    
+    # 2. Students table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS students (
             student_id TEXT PRIMARY KEY,
@@ -29,28 +28,29 @@ def init_database():
             reading_score INTEGER,
             writing_score INTEGER,
             feedback_text TEXT,
-            guardian_email TEXT  -- Added for your future email feature
+            guardian_email TEXT,
+            gpa REAL DEFAULT 0.0,
+            attendance_rate INTEGER DEFAULT 100,
+            participation_score INTEGER DEFAULT 100,
+            late_submissions INTEGER DEFAULT 0,
+            assignment_text TEXT DEFAULT '',
+            ai_essay_score INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
     
-    # 4. Insert Data
-    print(f"⚙️  Migrating {len(df)} records to SQL...")
+    # Clear existing data to ensure it's empty
+    cursor.execute('DELETE FROM students')
+    cursor.execute('DELETE FROM users')
     
-    # We add a fake email for every student for the future feature
-    df['guardian_email'] = "parent_" + df['Student_ID'] + "@example.com"
-    
-    # Select only the columns we need to match the SQL table
-    # Rename columns to match SQL schema if necessary
-    sql_data = df[['Student_ID', 'math score', 'reading score', 'writing score', 'Feedback_Text', 'guardian_email']]
-    sql_data.columns = ['student_id', 'math_score', 'reading_score', 'writing_score', 'feedback_text', 'guardian_email']
-    
-    # Bulk write to SQL
-    sql_data.to_sql('students', conn, if_exists='replace', index=False)
+    # Seed default users
+    cursor.execute("INSERT INTO users (username, password, role) VALUES ('admin', 'admin123', 'admin')")
+    cursor.execute("INSERT INTO users (username, password, role) VALUES ('faculty', 'faculty123', 'faculty')")
     
     conn.commit()
     conn.close()
     
-    print(f"✅ Success! Database '{DB_FILE}' is ready.")
+    print(f"✅ Success! Database '{DB_FILE}' initialized and ready (Empty state).")
 
 if __name__ == "__main__":
-    init_database();
+    init_database()

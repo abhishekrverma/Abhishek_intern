@@ -1,0 +1,83 @@
+{
+  "model_type": "RandomForestClassifier",
+  "n_estimators": 200,
+  "max_depth": 15,
+  "dataset_size": 10000,
+  "train_size": 8000,
+  "test_size": 2000,
+  "test_accuracy": 99.45,
+  "cross_validation": {
+    "n_folds": 5,
+    "mean_accuracy": 99.38,
+    "std_accuracy": 0.2,
+    "fold_scores": [
+      99.6,
+      99.55,
+      99.3,
+      99.4,
+      99.05
+    ]
+  },
+  "classification_report": {
+    "Low Risk": {
+      "precision": 99.38,
+      "recall": 99.64,
+      "f1_score": 99.51,
+      "support": 1126
+    },
+    "Moderate Risk": {
+      "precision": 99.2,
+      "recall": 98.61,
+      "f1_score": 98.91,
+      "support": 505
+    },
+    "High Risk": {
+      "precision": 100.0,
+      "recall": 100.0,
+      "f1_score": 100.0,
+      "support": 369
+    }
+  },
+  "confusion_matrix": [
+    [
+      1122,
+      4,
+      0
+    ],
+    [
+      7,
+      498,
+      0
+    ],
+    [
+      0,
+      0,
+      369
+    ]
+  ],
+  "feature_importance": {
+    "participation_score": 0.3091,
+    "attendance_rate": 0.2943,
+    "late_submissions": 0.1875,
+    "reading score": 0.0701,
+    "writing score": 0.059,
+    "gpa": 0.0356,
+    "Sentiment_Score": 0.0246,
+    "math score": 0.0198
+  },
+  "features_used": [
+    "gpa",
+    "attendance_rate",
+    "participation_score",
+    "late_submissions",
+    "math score",
+    "reading score",
+    "writing score",
+    "Sentiment_Score"
+  ],
+  "class_labels": {
+    "0": "Low Risk",
+    "1": "Moderate Risk",
+    "2": "High Risk"
+  }
+}
