@@ -1,6 +1,7 @@
 "use client";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { Lock, User, ShieldCheck, Sparkles, GraduationCap, Eye, EyeOff } from "lucide-react";
 
 export default function Login() {
@@ -167,10 +168,22 @@ export default function Login() {
             </button>
           </form>
 
-          <div className="mt-6 pt-4 border-t border-slate-100">
+          <div className="mt-5 pt-4 border-t border-slate-100 text-center">
+            <p className="text-sm text-slate-500">
+              Don&apos;t have an account?{" "}
+              <Link
+                href="/signup"
+                className="font-bold text-blue-600 hover:text-blue-700 transition-colors"
+              >
+                Sign Up →
+              </Link>
+            </p>
+          </div>
+
+          <div className="mt-3">
             <p className="text-center text-xs text-slate-400 flex items-center justify-center gap-2">
               <Lock size={12} />
-              Protected by End-to-End Encryption
+              Protected by Bcrypt Encryption
             </p>
           </div>
         </div>

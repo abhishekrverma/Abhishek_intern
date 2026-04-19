@@ -3,7 +3,8 @@ from pydantic import BaseModel, field_validator
 import pickle
 import json
 import pandas as pd
-import sqlite3
+import mysql.connector
+import bcrypt
 from textblob import TextBlob
 from fastapi.middleware.cors import CORSMiddleware
 import os
@@ -19,7 +20,7 @@ load_dotenv()
 app = FastAPI(
     title="EduGuard AI API",
     description="Student Early Warning System — AI-Powered Academic Risk Prediction",
-    version="2.0.0"
+    version="3.0.0"
 )
 
 app.add_middleware(
@@ -31,8 +32,15 @@ app.add_middleware(
 )
 
 MODEL_PATH = 'model.pkl'
-DB_PATH = 'student_system.db'
 METRICS_PATH = 'model_metrics.json'
+
+# MySQL Configuration
+MYSQL_CONFIG = {
+    'host': os.getenv('MYSQL_HOST', 'localhost'),
+    'user': os.getenv('MYSQL_USER', 'root'),
+    'password': os.getenv('MYSQL_PASSWORD', 'abhishek11'),
+    'database': os.getenv('MYSQL_DATABASE', 'eduguard'),
+}
 
 # Load Model (Pipeline: Scaler + RandomForest)
 model = None
@@ -52,10 +60,9 @@ try:
 except FileNotFoundError:
     print("⚠️ Warning: model_metrics.json not found. Train the model to generate metrics.")
 
-# Database Connection Helper
+# MySQL Connection Helper
 def get_db_connection():
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
+    conn = mysql.connector.connect(**MYSQL_CONFIG)
     return conn
 
 
@@ -114,6 +121,12 @@ class LoginRequest(BaseModel):
     username: str
     password: str
 
+class SignupRequest(BaseModel):
+    username: str
+    email: str
+    password: str
+    role: str = "faculty"
+
 class StudentUpdate(BaseModel):
     math_score: int
     reading_score: int
@@ -153,14 +166,9 @@ def grade_assignment(text: str) -> int:
     if word_count == 0: return 0
     unique_words = len(set(words))
     
-    # 0-50 points for length (cap at 150 words)
     length_score = min(50, (word_count / 150.0) * 50)
-    
-    # 0-40 points for lexical richness (unique words ratio)
     richness = unique_words / word_count
     richness_score = min(40, (richness / 0.7) * 40)
-    
-    # 0-10 bonus points for descriptive language (subjectivity)
     blob = TextBlob(text)
     subj_bonus = blob.sentiment.subjectivity * 10
     
@@ -236,7 +244,8 @@ def generate_narrative(risk_level, sentiment, math, reading, writing):
 def home():
     return {
         "status": "System Operational",
-        "version": "2.0.0",
+        "version": "3.0.0",
+        "database": "MySQL",
         "email_system": "Active",
         "model_loaded": model is not None
     }
@@ -246,8 +255,10 @@ def home():
 @app.get("/dashboard/stats")
 def get_dashboard_stats():
     conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
     try:
-        total = conn.execute("SELECT COUNT(*) FROM students").fetchone()[0]
+        cursor.execute("SELECT COUNT(*) as cnt FROM students")
+        total = cursor.fetchone()['cnt']
     except Exception:
         conn.close()
         return {"total_students": 0, "low_risk": 0, "moderate_risk": 0, "high_risk": 0}
@@ -256,7 +267,8 @@ def get_dashboard_stats():
         conn.close()
         return {"total_students": 0, "low_risk": 0, "moderate_risk": 0, "high_risk": 0}
 
-    rows = conn.execute("SELECT * FROM students").fetchall()
+    cursor.execute("SELECT * FROM students")
+    rows = cursor.fetchall()
     conn.close()
 
     data = []
@@ -288,9 +300,11 @@ def get_dashboard_stats():
 @app.get("/dashboard/all_students")
 def get_all_students():
     conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
     try:
-        rows = conn.execute("SELECT * FROM students").fetchall()
-    except sqlite3.OperationalError:
+        cursor.execute("SELECT * FROM students")
+        rows = cursor.fetchall()
+    except Exception:
         conn.close()
         return []
     conn.close()
@@ -308,7 +322,7 @@ def get_all_students():
             "writing_score": r['writing_score'],
             "feedback_text": r['feedback_text'],
             "guardian_email": r['guardian_email'],
-            "gpa": r['gpa'],
+            "gpa": float(r['gpa']) if r['gpa'] else 0.0,
             "attendance_rate": r['attendance_rate'],
             "participation_score": r['participation_score'],
             "late_submissions": r['late_submissions'],
@@ -325,10 +339,16 @@ def get_all_students():
 def login(data: LoginRequest):
     try:
         conn = get_db_connection()
-        user = conn.execute("SELECT * FROM users WHERE username = ? AND password = ?", (data.username, data.password)).fetchone()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM users WHERE username = %s", (data.username,))
+        user = cursor.fetchone()
         conn.close()
         
         if not user:
+            raise HTTPException(status_code=401, detail="Invalid username or password")
+        
+        # Verify password with bcrypt
+        if not bcrypt.checkpw(data.password.encode('utf-8'), user['password_hash'].encode('utf-8')):
             raise HTTPException(status_code=401, detail="Invalid username or password")
             
         return {
@@ -342,19 +362,73 @@ def login(data: LoginRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# === SIGNUP ===
+@app.post("/signup")
+def signup(data: SignupRequest):
+    try:
+        # Validate role
+        if data.role not in ['admin', 'faculty']:
+            raise HTTPException(status_code=400, detail="Role must be 'admin' or 'faculty'")
+        
+        # Validate inputs
+        if len(data.username.strip()) < 3:
+            raise HTTPException(status_code=400, detail="Username must be at least 3 characters")
+        if len(data.password) < 6:
+            raise HTTPException(status_code=400, detail="Password must be at least 6 characters")
+        if "@" not in data.email:
+            raise HTTPException(status_code=400, detail="Invalid email address")
+
+        conn = get_db_connection()
+        cursor = conn.cursor(dictionary=True)
+        
+        # Check if username exists
+        cursor.execute("SELECT id FROM users WHERE username = %s", (data.username,))
+        if cursor.fetchone():
+            conn.close()
+            raise HTTPException(status_code=400, detail="Username already exists")
+        
+        # Check if email exists
+        cursor.execute("SELECT id FROM users WHERE email = %s", (data.email,))
+        if cursor.fetchone():
+            conn.close()
+            raise HTTPException(status_code=400, detail="Email already registered")
+        
+        # Hash password and insert
+        password_hash = bcrypt.hashpw(data.password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        cursor.execute(
+            "INSERT INTO users (username, email, password_hash, role) VALUES (%s, %s, %s, %s)",
+            (data.username.strip(), data.email.strip().lower(), password_hash, data.role)
+        )
+        conn.commit()
+        conn.close()
+        
+        return {
+            "success": True,
+            "message": "Account created successfully",
+            "username": data.username,
+            "role": data.role
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # === RECENT ACTIVITY ===
 @app.get("/analytics/recent_activity")
 def get_recent_activity():
     try:
         conn = get_db_connection()
-        rows = conn.execute("SELECT student_id, created_at, math_score, reading_score, writing_score FROM students ORDER BY created_at DESC LIMIT 5").fetchall()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT student_id, created_at, math_score, reading_score, writing_score FROM students ORDER BY created_at DESC LIMIT 5")
+        rows = cursor.fetchall()
         conn.close()
         
         recent = []
         for r in rows:
             recent.append({
                 "student_id": r['student_id'],
-                "created_at": r['created_at'],
+                "created_at": str(r['created_at']) if r['created_at'] else None,
                 "math_score": r['math_score'],
                 "reading_score": r['reading_score'],
                 "writing_score": r['writing_score']
@@ -369,11 +443,11 @@ def get_recent_activity():
 def register_student(data: StudentRegistration):
     try:
         conn = get_db_connection()
-        cursor = conn.cursor()
+        cursor = conn.cursor(dictionary=True)
         
         # Check for duplicate ID
-        existing = cursor.execute("SELECT 1 FROM students WHERE student_id = ?", (data.student_id,)).fetchone()
-        if existing:
+        cursor.execute("SELECT 1 FROM students WHERE student_id = %s", (data.student_id,))
+        if cursor.fetchone():
             conn.close()
             raise HTTPException(status_code=400, detail="Student ID already exists.")
             
@@ -383,7 +457,7 @@ def register_student(data: StudentRegistration):
         cursor.execute('''INSERT INTO students 
             (student_id, math_score, reading_score, writing_score, feedback_text, guardian_email,
              gpa, attendance_rate, participation_score, late_submissions, assignment_text, ai_essay_score)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)''',
             (data.student_id, data.math_score, data.reading_score, data.writing_score, data.feedback_text, data.guardian_email,
              data.gpa, data.attendance_rate, data.participation_score, data.late_submissions, data.assignment_text, ai_essay_score))
         conn.commit()
@@ -402,6 +476,8 @@ def register_student(data: StudentRegistration):
             "confidence": confidence,
             "ai_essay_score": ai_essay_score
         }
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
@@ -411,15 +487,15 @@ def register_student(data: StudentRegistration):
 def update_student(student_id: str, data: StudentUpdate):
     try:
         conn = get_db_connection()
-        cursor = conn.cursor()
-        exists = cursor.execute("SELECT 1 FROM students WHERE student_id = ?", (student_id,)).fetchone()
-        if not exists:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT 1 FROM students WHERE student_id = %s", (student_id,))
+        if not cursor.fetchone():
             conn.close()
             raise HTTPException(status_code=404, detail="Student not found")
 
         cursor.execute('''UPDATE students 
-            SET math_score=?, reading_score=?, writing_score=?, feedback_text=?, guardian_email=?
-            WHERE student_id=?''', (data.math_score, data.reading_score, data.writing_score, data.feedback_text, data.guardian_email, student_id))
+            SET math_score=%s, reading_score=%s, writing_score=%s, feedback_text=%s, guardian_email=%s
+            WHERE student_id=%s''', (data.math_score, data.reading_score, data.writing_score, data.feedback_text, data.guardian_email, student_id))
         conn.commit()
         conn.close()
         return {"status": "success", "message": f"Student {student_id} updated."}
@@ -435,13 +511,13 @@ def regenerate_all():
     """Recalculates AI scores and models for all students in DB."""
     try:
         conn = get_db_connection()
-        cursor = conn.cursor()
-        rows = cursor.execute("SELECT student_id, assignment_text FROM students").fetchall()
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT student_id, assignment_text FROM students")
+        rows = cursor.fetchall()
         
         for r in rows:
-            # Re-grade their assignment text
             new_score = grade_assignment(r['assignment_text'])
-            cursor.execute("UPDATE students SET ai_essay_score = ? WHERE student_id = ?", (new_score, r['student_id']))
+            cursor.execute("UPDATE students SET ai_essay_score = %s WHERE student_id = %s", (new_score, r['student_id']))
             
         conn.commit()
         conn.close()
@@ -453,11 +529,12 @@ def regenerate_all():
 @app.delete("/student/{student_id}")
 def delete_student(student_id: str):
     conn = get_db_connection()
-    exists = conn.execute("SELECT 1 FROM students WHERE student_id = ?", (student_id,)).fetchone()
-    if not exists:
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT 1 FROM students WHERE student_id = %s", (student_id,))
+    if not cursor.fetchone():
         conn.close()
         raise HTTPException(status_code=404, detail="Student not found")
-    conn.execute("DELETE FROM students WHERE student_id = ?", (student_id,))
+    cursor.execute("DELETE FROM students WHERE student_id = %s", (student_id,))
     conn.commit()
     conn.close()
     return {"status": "success", "message": f"Student {student_id} removed."}
@@ -467,7 +544,9 @@ def delete_student(student_id: str):
 @app.get("/student/{student_id}")
 def analyze_student(student_id: str):
     conn = get_db_connection()
-    student = conn.execute('SELECT * FROM students WHERE student_id = ?', (student_id,)).fetchone()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute('SELECT * FROM students WHERE student_id = %s', (student_id,))
+    student = cursor.fetchone()
     conn.close()
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
@@ -513,11 +592,10 @@ def predict_risk(data: StudentData):
     }
 
 
-# --- 5. NEW ANALYTICS & MODEL ENDPOINTS ---
+# --- 5. ANALYTICS & MODEL ENDPOINTS ---
 
 @app.get("/model/metrics")
 def get_model_metrics():
-    """Returns model training metrics (accuracy, cross-val, classification report, etc.)."""
     if model_metrics is None:
         raise HTTPException(status_code=404, detail="Model metrics not available. Retrain the model.")
     return model_metrics
@@ -525,7 +603,6 @@ def get_model_metrics():
 
 @app.get("/model/feature_importance")
 def get_feature_importance():
-    """Returns feature importance scores from the trained model."""
     if model_metrics is None or "feature_importance" not in model_metrics:
         raise HTTPException(status_code=404, detail="Feature importance not available.")
     
@@ -540,10 +617,11 @@ def get_feature_importance():
 
 @app.get("/analytics/score_distribution")
 def get_score_distribution():
-    """Returns histogram data for math/reading/writing score distributions."""
     conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
     try:
-        rows = conn.execute("SELECT math_score, reading_score, writing_score FROM students").fetchall()
+        cursor.execute("SELECT math_score, reading_score, writing_score FROM students")
+        rows = cursor.fetchall()
     except Exception:
         conn.close()
         return {"bins": [], "math": [], "reading": [], "writing": []}
@@ -556,7 +634,6 @@ def get_score_distribution():
     reading_scores = [r['reading_score'] for r in rows]
     writing_scores = [r['writing_score'] for r in rows]
 
-    # Create bins: 0-10, 10-20, ..., 90-100
     bins = list(range(0, 101, 10))
     bin_labels = [f"{bins[i]}-{bins[i+1]}" for i in range(len(bins)-1)]
 
@@ -575,10 +652,10 @@ def get_score_distribution():
 
 @app.get("/analytics/class_averages")
 def get_class_averages():
-    """Returns class-wide average scores and stats."""
     conn = get_db_connection()
+    cursor = conn.cursor(dictionary=True)
     try:
-        result = conn.execute("""
+        cursor.execute("""
             SELECT 
                 AVG(math_score) as avg_math,
                 AVG(reading_score) as avg_reading,
@@ -591,7 +668,8 @@ def get_class_averages():
                 MAX(writing_score) as max_writing,
                 COUNT(*) as total
             FROM students
-        """).fetchone()
+        """)
+        result = cursor.fetchone()
     except Exception:
         conn.close()
         return {}
@@ -602,9 +680,9 @@ def get_class_averages():
 
     return {
         "averages": {
-            "math": round(result['avg_math'], 1),
-            "reading": round(result['avg_reading'], 1),
-            "writing": round(result['avg_writing'], 1)
+            "math": round(float(result['avg_math']), 1),
+            "reading": round(float(result['avg_reading']), 1),
+            "writing": round(float(result['avg_writing']), 1)
         },
         "ranges": {
             "math": {"min": result['min_math'], "max": result['max_math']},
@@ -620,7 +698,9 @@ def get_class_averages():
 @app.post("/alert/{student_id}")
 def send_alert(student_id: str):
     conn = get_db_connection()
-    student = conn.execute('SELECT guardian_email, math_score FROM students WHERE student_id = ?', (student_id,)).fetchone()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute('SELECT guardian_email, math_score FROM students WHERE student_id = %s', (student_id,))
+    student = cursor.fetchone()
     conn.close()
 
     if not student:
@@ -639,7 +719,9 @@ def send_alert(student_id: str):
 @app.post("/alert/bulk_risk")
 def send_bulk_alerts():
     conn = get_db_connection()
-    rows = conn.execute("SELECT * FROM students").fetchall()
+    cursor = conn.cursor(dictionary=True)
+    cursor.execute("SELECT * FROM students")
+    rows = cursor.fetchall()
     conn.close()
 
     sent_count = 0
