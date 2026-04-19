@@ -543,7 +543,7 @@ export default function Dashboard() {
             <tbody className="divide-y divide-slate-50">
               {paginatedStudents.length === 0 ? (
                 <tr>
-                  <td colSpan={6} className="p-10 text-center text-slate-400">No students found.</td>
+                  <td colSpan={7} className="p-10 text-center text-slate-400">No students found.</td>
                 </tr>
               ) : (
                 paginatedStudents.map((s) => (

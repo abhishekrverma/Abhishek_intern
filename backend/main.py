@@ -529,30 +529,39 @@ def regenerate_all():
 @app.delete("/student/{student_id}")
 def delete_student(student_id: str):
     conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT 1 FROM students WHERE student_id = %s", (student_id,))
-    if not cursor.fetchone():
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT 1 FROM students WHERE student_id = %s", (student_id,))
+        if not cursor.fetchone():
+            raise HTTPException(status_code=404, detail="Student not found")
+        cursor.execute("DELETE FROM students WHERE student_id = %s", (student_id,))
+        conn.commit()
+        return {"status": "success", "message": f"Student {student_id} removed."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+    finally:
         conn.close()
-        raise HTTPException(status_code=404, detail="Student not found")
-    cursor.execute("DELETE FROM students WHERE student_id = %s", (student_id,))
-    conn.commit()
-    conn.close()
-    return {"status": "success", "message": f"Student {student_id} removed."}
 
 
 # === STUDENT PROFILE ===
 @app.get("/student/{student_id}")
 def analyze_student(student_id: str):
     conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute('SELECT * FROM students WHERE student_id = %s', (student_id,))
-    student = cursor.fetchone()
-    conn.close()
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute('SELECT * FROM students WHERE student_id = %s', (student_id,))
+        student = cursor.fetchone()
+    finally:
+        conn.close()
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
 
     risk, sentiment, confidence = predict_student_risk(
-        student['math_score'], student['reading_score'], student['writing_score'], student['feedback_text']
+        student['math_score'], student['reading_score'], student['writing_score'], student['feedback_text'],
+        student.get('gpa', 0.0), student.get('attendance_rate', 100),
+        student.get('participation_score', 100), student.get('late_submissions', 0)
     )
     narrative = generate_narrative(risk, sentiment, student['math_score'], student['reading_score'], student['writing_score'])
 
@@ -565,7 +574,13 @@ def analyze_student(student_id: str):
                 "reading": student['reading_score'],
                 "writing": student['writing_score']
             },
-            "feedback_raw": student['feedback_text']
+            "gpa": float(student.get('gpa', 0)) if student.get('gpa') else 0.0,
+            "attendance_rate": student.get('attendance_rate', 100),
+            "participation_score": student.get('participation_score', 100),
+            "late_submissions": student.get('late_submissions', 0),
+            "ai_essay_score": student.get('ai_essay_score', 0),
+            "feedback_raw": student['feedback_text'],
+            "created_at": str(student.get('created_at', '')) if student.get('created_at') else None
         },
         "prediction": {
             "risk_level_id": risk,
@@ -695,48 +710,95 @@ def get_class_averages():
 
 # --- 6. ALERTS (Real Email) ---
 
+@app.post("/alert/bulk_risk")
+def send_bulk_alerts():
+    conn = get_db_connection()
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute("SELECT * FROM students")
+        rows = cursor.fetchall()
+    finally:
+        conn.close()
+
+    sent_count = 0
+    failed_count = 0
+    for r in rows:
+        risk, _, confidence = predict_student_risk(
+            r['math_score'], r['reading_score'], r['writing_score'], r.get('feedback_text', ''),
+            r.get('gpa', 0.0), r.get('attendance_rate', 100),
+            r.get('participation_score', 100), r.get('late_submissions', 0)
+        )
+        risk_label = ["Low", "Moderate", "High"][risk]
+
+        if risk == 2 and r['guardian_email']:
+            subject = f"Academic Warning: Student {r['student_id']} — {risk_label} Risk"
+            body = (
+                f"Dear Guardian,\n\n"
+                f"Student {r['student_id']} has been identified as {risk_label} Risk "
+                f"(AI Confidence: {confidence}%) by the EduGuard Early Warning System.\n\n"
+                f"Academic Scores — Math: {r['math_score']}, Reading: {r['reading_score']}, Writing: {r['writing_score']}\n"
+                f"GPA: {r.get('gpa', 'N/A')} | Attendance: {r.get('attendance_rate', 'N/A')}%\n\n"
+                f"Please schedule a meeting with the faculty.\n\n"
+                f"— EduGuard AI System"
+            )
+            if send_real_email(r['guardian_email'], subject, body):
+                sent_count += 1
+            else:
+                failed_count += 1
+
+    return {
+        "status": "success",
+        "message": f"Successfully emailed {sent_count} high-risk guardians.",
+        "sent": sent_count,
+        "failed": failed_count
+    }
+
+
 @app.post("/alert/{student_id}")
 def send_alert(student_id: str):
     conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute('SELECT guardian_email, math_score FROM students WHERE student_id = %s', (student_id,))
-    student = cursor.fetchone()
-    conn.close()
+    try:
+        cursor = conn.cursor(dictionary=True)
+        cursor.execute('SELECT * FROM students WHERE student_id = %s', (student_id,))
+        student = cursor.fetchone()
+    finally:
+        conn.close()
 
     if not student:
         raise HTTPException(status_code=404, detail="Student not found")
 
-    subject = f"URGENT: Academic Alert for {student_id}"
-    body = f"Automated Alert: Student {student_id} is flagged as At-Risk. Math Score: {student['math_score']}. Please contact faculty."
+    risk, _, confidence = predict_student_risk(
+        student['math_score'], student['reading_score'], student['writing_score'], student.get('feedback_text', ''),
+        student.get('gpa', 0.0), student.get('attendance_rate', 100),
+        student.get('participation_score', 100), student.get('late_submissions', 0)
+    )
+    risk_label = ["Low", "Moderate", "High"][risk]
+
+    subject = f"URGENT: Academic Risk Alert for Student {student_id}"
+    body = (
+        f"Dear Guardian,\n\n"
+        f"This is an automated alert from the EduGuard AI Early Warning System regarding Student {student_id}.\n\n"
+        f"--- RISK ASSESSMENT ---\n"
+        f"Risk Level: {risk_label} (Confidence: {confidence}%)\n\n"
+        f"--- ACADEMIC SCORES ---\n"
+        f"Math: {student['math_score']}/100\n"
+        f"Reading: {student['reading_score']}/100\n"
+        f"Writing: {student['writing_score']}/100\n"
+        f"GPA: {student.get('gpa', 'N/A')}\n\n"
+        f"--- BEHAVIORAL DATA ---\n"
+        f"Attendance Rate: {student.get('attendance_rate', 'N/A')}%\n"
+        f"Participation Score: {student.get('participation_score', 'N/A')}%\n"
+        f"Late Submissions: {student.get('late_submissions', 'N/A')}\n\n"
+        f"Please schedule a meeting with the faculty at the earliest convenience.\n\n"
+        f"Best regards,\n"
+        f"EduGuard AI System"
+    )
 
     success = send_real_email(student['guardian_email'], subject, body)
     if success:
-        return {"status": "success"}
+        return {"status": "success", "message": f"Alert sent to {student['guardian_email']}"}
     else:
         raise HTTPException(status_code=500, detail="Failed to send email.")
-
-
-@app.post("/alert/bulk_risk")
-def send_bulk_alerts():
-    conn = get_db_connection()
-    cursor = conn.cursor(dictionary=True)
-    cursor.execute("SELECT * FROM students")
-    rows = cursor.fetchall()
-    conn.close()
-
-    sent_count = 0
-    for r in rows:
-        risk, _, _ = predict_student_risk(
-            r['math_score'], r['reading_score'], r['writing_score'], r['feedback_text']
-        )
-
-        if risk == 2 and r['guardian_email']:
-            subject = f"Academic Warning: Student {r['student_id']}"
-            body = f"Dear Guardian,\n\nStudent {r['student_id']} has been identified as High Risk by our Early Warning System.\n\nPlease schedule a meeting.\n\n- EduGuard AI System"
-            if send_real_email(r['guardian_email'], subject, body):
-                sent_count += 1
-
-    return {"status": "success", "message": f"Successfully emailed {sent_count} high-risk guardians."}
 
 
 # --- 7. RUN SERVER ---
