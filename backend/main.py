@@ -38,13 +38,56 @@ app.add_middleware(
 MODEL_PATH = os.path.join(BASE_DIR, 'model.pkl')
 METRICS_PATH = os.path.join(BASE_DIR, 'model_metrics.json')
 
-# MySQL Configuration — all values must come from environment variables
-MYSQL_CONFIG = {
-    'host': os.getenv('MYSQL_HOST', 'localhost'),
-    'user': os.getenv('MYSQL_USER', 'root'),
-    'password': os.getenv('MYSQL_PASSWORD'),   # No hardcoded fallback
-    'database': os.getenv('MYSQL_DATABASE', 'eduguard'),
-}
+# MySQL Configuration
+# Supports either DATABASE_URL (Railway/Aiven/PlanetScale) or individual env vars
+_DATABASE_URL = os.getenv('DATABASE_URL') or os.getenv('MYSQL_URL')
+
+if _DATABASE_URL:
+    # Parse jdbc:mysql://user:pass@host:port/dbname or mysql://user:pass@host:port/dbname
+    import re as _re
+    _m = _re.match(r'(?:jdbc:)?mysql://([^:]+):([^@]+)@([^:/]+):?(\d+)?/([^?]+)', _DATABASE_URL)
+    if _m:
+        MYSQL_CONFIG = {
+            'user': _m.group(1),
+            'password': _m.group(2),
+            'host': _m.group(3),
+            'port': int(_m.group(4)) if _m.group(4) else 3306,
+            'database': _m.group(5),
+        }
+    else:
+        MYSQL_CONFIG = {}
+else:
+    MYSQL_CONFIG = {
+        'host': os.getenv('MYSQL_HOST', 'localhost'),
+        'port': int(os.getenv('MYSQL_PORT', '3306')),
+        'user': os.getenv('MYSQL_USER', 'root'),
+        'password': os.getenv('MYSQL_PASSWORD'),
+        'database': os.getenv('MYSQL_DATABASE', 'eduguard'),
+    }
+
+# Many cloud MySQL providers require SSL
+_USE_SSL = os.getenv('MYSQL_SSL', 'false').lower() in ('true', '1', 'yes')
+if _USE_SSL:
+    MYSQL_CONFIG['ssl_disabled'] = False
+
+def get_db_connection():
+    try:
+        conn = mysql.connector.connect(**MYSQL_CONFIG)
+        return conn
+    except Exception as e:
+        print(f"❌ DB connection failed: {e}")
+        raise HTTPException(status_code=503, detail=f"Database unavailable: {str(e)}")
+
+# Startup DB connectivity check (non-fatal)
+try:
+    _test = mysql.connector.connect(**MYSQL_CONFIG)
+    _test.close()
+    print(f"✅ MySQL connected → {MYSQL_CONFIG.get('host')}:{MYSQL_CONFIG.get('port', 3306)}/{MYSQL_CONFIG.get('database')}")
+except Exception as _e:
+    print(f"⚠️  MySQL NOT connected at startup: {_e}")
+    print(f"   Host={MYSQL_CONFIG.get('host')}  DB={MYSQL_CONFIG.get('database')}")
+    print("   Set MYSQL_HOST / MYSQL_USER / MYSQL_PASSWORD / MYSQL_DATABASE env vars on Render.")
+
 
 # Load Model (Pipeline: Scaler + RandomForest)
 model = None
@@ -63,11 +106,6 @@ try:
     print("✅ Model metrics loaded successfully.")
 except FileNotFoundError:
     print("⚠️ Warning: model_metrics.json not found. Train the model to generate metrics.")
-
-# MySQL Connection Helper
-def get_db_connection():
-    conn = mysql.connector.connect(**MYSQL_CONFIG)
-    return conn
 
 
 # --- 2. EMAIL ENGINE (REAL SMTP) ---
