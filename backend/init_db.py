@@ -1,42 +1,58 @@
 import mysql.connector
 import bcrypt
 import os
+import re
 from dotenv import load_dotenv
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 load_dotenv(dotenv_path=os.path.join(BASE_DIR, '.env'))
 
-# MySQL Configuration from .env
-MYSQL_HOST = os.getenv('MYSQL_HOST', 'localhost')
-MYSQL_USER = os.getenv('MYSQL_USER', 'root')
-MYSQL_PASSWORD = os.getenv('MYSQL_PASSWORD')   # No hardcoded fallback
-MYSQL_DATABASE = os.getenv('MYSQL_DATABASE', 'eduguard')
+# ── Connection config ────────────────────────────────────────────────────────
+# Supports DATABASE_URL (Railway/Aiven) OR individual MYSQL_* env vars
+_DATABASE_URL = os.getenv('DATABASE_URL') or os.getenv('MYSQL_URL')
+
+if _DATABASE_URL:
+    m = re.match(r'(?:jdbc:)?mysql://([^:]+):([^@]+)@([^:/]+):?(\d+)?/([^?]+)', _DATABASE_URL)
+    if not m:
+        raise ValueError(f"Cannot parse DATABASE_URL: {_DATABASE_URL}")
+    CONNECT_ARGS = {
+        'user':     m.group(1),
+        'password': m.group(2),
+        'host':     m.group(3),
+        'port':     int(m.group(4)) if m.group(4) else 3306,
+        'database': m.group(5),
+    }
+    DB_NAME = m.group(5)
+    print(f"🔗 Using DATABASE_URL → {m.group(3)}:{CONNECT_ARGS['port']}/{DB_NAME}")
+else:
+    CONNECT_ARGS = {
+        'host':     os.getenv('MYSQL_HOST', 'localhost'),
+        'port':     int(os.getenv('MYSQL_PORT', '3306')),
+        'user':     os.getenv('MYSQL_USER', 'root'),
+        'password': os.getenv('MYSQL_PASSWORD'),
+        'database': os.getenv('MYSQL_DATABASE', 'eduguard'),
+    }
+    DB_NAME = CONNECT_ARGS['database']
+    print(f"🔗 Using env vars → {CONNECT_ARGS['host']}:{CONNECT_ARGS['port']}/{DB_NAME}")
 
 
 def init_database():
     print("📦 Initializing MySQL Database...")
 
-    # 1. Connect WITHOUT a database to create it
-    conn = mysql.connector.connect(
-        host=MYSQL_HOST,
-        user=MYSQL_USER,
-        password=MYSQL_PASSWORD
-    )
-    cursor = conn.cursor()
-    cursor.execute(f"CREATE DATABASE IF NOT EXISTS `{MYSQL_DATABASE}`")
-    conn.close()
-    print(f"✅ Database '{MYSQL_DATABASE}' ensured.")
+    # When using DATABASE_URL the DB already exists (Railway provisions it)
+    # so connect directly; only try CREATE DATABASE for local setups
+    if not (_DATABASE_URL):
+        bare = {k: v for k, v in CONNECT_ARGS.items() if k != 'database'}
+        conn = mysql.connector.connect(**bare)
+        conn.cursor().execute(f"CREATE DATABASE IF NOT EXISTS `{DB_NAME}`")
+        conn.close()
+        print(f"✅ Database '{DB_NAME}' ensured.")
 
-    # 2. Connect to the database
-    conn = mysql.connector.connect(
-        host=MYSQL_HOST,
-        user=MYSQL_USER,
-        password=MYSQL_PASSWORD,
-        database=MYSQL_DATABASE
-    )
+    # Connect to the target database
+    conn = mysql.connector.connect(**CONNECT_ARGS)
     cursor = conn.cursor()
 
-    # 3. Users table for authentication
+    # Users table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS users (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -48,7 +64,7 @@ def init_database():
         )
     ''')
 
-    # 4. Students table
+    # Students table
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS students (
             student_id VARCHAR(50) PRIMARY KEY,
@@ -67,13 +83,13 @@ def init_database():
         )
     ''')
 
-    # 5. Seed default admin user (only if no users exist)
+    # Seed default users only if none exist
     cursor.execute("SELECT COUNT(*) FROM users")
     user_count = cursor.fetchone()[0]
 
     if user_count == 0:
-        admin_hash = bcrypt.hashpw("admin123".encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
-        faculty_hash = bcrypt.hashpw("faculty123".encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+        admin_hash   = bcrypt.hashpw(b"admin123",   bcrypt.gensalt()).decode()
+        faculty_hash = bcrypt.hashpw(b"faculty123", bcrypt.gensalt()).decode()
 
         cursor.execute(
             "INSERT INTO users (username, email, password_hash, role) VALUES (%s, %s, %s, %s)",
@@ -83,14 +99,13 @@ def init_database():
             "INSERT INTO users (username, email, password_hash, role) VALUES (%s, %s, %s, %s)",
             ("faculty", "faculty@eduguard.com", faculty_hash, "faculty")
         )
-        print("👤 Seeded default users: admin/admin123, faculty/faculty123")
+        print("👤 Seeded: admin/admin123  |  faculty/faculty123")
     else:
-        print(f"👤 {user_count} users already exist, skipping seed.")
+        print(f"👤 {user_count} user(s) already exist — skipping seed.")
 
     conn.commit()
     conn.close()
-
-    print(f"✅ Success! MySQL database '{MYSQL_DATABASE}' initialized and ready.")
+    print(f"✅ Done! Database '{DB_NAME}' is initialized and ready.")
 
 
 if __name__ == "__main__":
