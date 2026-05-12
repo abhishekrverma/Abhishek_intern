@@ -843,6 +843,40 @@ def send_alert(student_id: str):
         raise HTTPException(status_code=500, detail="Failed to send email.")
 
 
+@app.get("/fix_db")
+def fix_db():
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Drop the existing students table
+        cursor.execute("DROP TABLE IF EXISTS students")
+        
+        # Recreate the students table with the correct schema
+        cursor.execute('''
+            CREATE TABLE students (
+                student_id VARCHAR(50) PRIMARY KEY,
+                math_score INT,
+                reading_score INT,
+                writing_score INT,
+                feedback_text TEXT,
+                guardian_email VARCHAR(200),
+                gpa FLOAT DEFAULT 0.0,
+                attendance_rate INT DEFAULT 100,
+                participation_score INT DEFAULT 100,
+                late_submissions INT DEFAULT 0,
+                assignment_text TEXT,
+                ai_essay_score INT DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        ''')
+        
+        conn.commit()
+        conn.close()
+        return {"status": "success", "message": "students table dropped and recreated successfully with VARCHAR student_id"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
 # --- 7. RUN SERVER ---
 if __name__ == "__main__":
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
