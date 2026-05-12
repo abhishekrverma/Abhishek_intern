@@ -794,9 +794,14 @@ def send_bulk_alerts():
                 print(f"Failed to send to {r['guardian_email']}: {e}")
                 failed_count += 1
 
+    if failed_count > 0:
+        msg = f"Sent to {sent_count} students. FAILED to send to {failed_count} students (Check your Render MAIL_USERNAME/MAIL_PASSWORD)."
+    else:
+        msg = f"Successfully emailed {sent_count} high-risk guardians."
+
     return {
-        "status": "success",
-        "message": f"Successfully emailed {sent_count} high-risk guardians.",
+        "status": "success" if failed_count == 0 else "warning",
+        "message": msg,
         "sent": sent_count,
         "failed": failed_count
     }
