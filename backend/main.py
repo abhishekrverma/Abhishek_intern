@@ -115,10 +115,10 @@ def send_real_email(to_email, subject, body):
 
     if not sender_email or not sender_password:
         print("❌ Error: Missing email credentials in .env file")
-        return False
+        raise HTTPException(status_code=500, detail="MAIL_USERNAME and MAIL_PASSWORD are not set in environment variables.")
     if not to_email or "@" not in to_email:
         print(f"⚠️ Skipping invalid email: {to_email}")
-        return False
+        raise HTTPException(status_code=400, detail=f"Invalid guardian email address: {to_email}")
 
     msg = MIMEMultipart()
     msg['From'] = sender_email
@@ -127,14 +127,18 @@ def send_real_email(to_email, subject, body):
     msg.attach(MIMEText(body, 'plain'))
 
     try:
-        with smtplib.SMTP_SSL('smtp.gmail.com', 465) as server:
-            server.login(sender_email, sender_password)
-            server.sendmail(sender_email, to_email, msg.as_string())
-        print(f"📧 Email sent successfully to {to_email}")
+        server = smtplib.SMTP('smtp.gmail.com', 587)
+        server.starttls()
+        server.login(sender_email, sender_password)
+        server.send_message(msg)
+        server.quit()
         return True
+    except smtplib.SMTPAuthenticationError:
+        print("❌ Failed to authenticate with SMTP server (use App Passwords for Gmail)")
+        raise HTTPException(status_code=500, detail="SMTP Authentication failed. Ensure you are using a valid App Password (not your normal password).")
     except Exception as e:
         print(f"❌ Failed to send email: {e}")
-        return False
+        raise HTTPException(status_code=500, detail=f"SMTP Error: {str(e)}")
 
 
 # --- 3. DATA MODELS & HELPERS ---
@@ -783,9 +787,11 @@ def send_bulk_alerts():
                 f"Please schedule a meeting with the faculty.\n\n"
                 f"— EduGuard AI System"
             )
-            if send_real_email(r['guardian_email'], subject, body):
+            try:
+                send_real_email(r['guardian_email'], subject, body)
                 sent_count += 1
-            else:
+            except Exception as e:
+                print(f"Failed to send to {r['guardian_email']}: {e}")
                 failed_count += 1
 
     return {
@@ -836,11 +842,9 @@ def send_alert(student_id: str):
         f"EduGuard AI System"
     )
 
-    success = send_real_email(student['guardian_email'], subject, body)
-    if success:
-        return {"status": "success", "message": f"Alert sent to {student['guardian_email']}"}
-    else:
-        raise HTTPException(status_code=500, detail="Failed to send email.")
+    # This will raise an HTTPException directly if it fails
+    send_real_email(student['guardian_email'], subject, body)
+    return {"status": "success", "message": f"Alert sent to {student['guardian_email']}"}
 
 
 @app.get("/fix_db")
