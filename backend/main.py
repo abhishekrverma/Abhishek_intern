@@ -15,7 +15,11 @@ from dotenv import load_dotenv
 import uvicorn
 
 # --- 1. SETUP & CONFIGURATION ---
-load_dotenv()
+# Use __file__ to resolve all paths relative to this script's location,
+# so Render (or any deployment) finds files regardless of working directory.
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+DOTENV_PATH = os.path.join(BASE_DIR, '.env')
+load_dotenv(dotenv_path=DOTENV_PATH)
 
 app = FastAPI(
     title="EduGuard AI API",
@@ -31,14 +35,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-MODEL_PATH = 'model.pkl'
-METRICS_PATH = 'model_metrics.json'
+MODEL_PATH = os.path.join(BASE_DIR, 'model.pkl')
+METRICS_PATH = os.path.join(BASE_DIR, 'model_metrics.json')
 
-# MySQL Configuration
+# MySQL Configuration — all values must come from environment variables
 MYSQL_CONFIG = {
     'host': os.getenv('MYSQL_HOST', 'localhost'),
     'user': os.getenv('MYSQL_USER', 'root'),
-    'password': os.getenv('MYSQL_PASSWORD', 'abhishek11'),
+    'password': os.getenv('MYSQL_PASSWORD'),   # No hardcoded fallback
     'database': os.getenv('MYSQL_DATABASE', 'eduguard'),
 }
 
