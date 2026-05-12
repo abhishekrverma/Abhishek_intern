@@ -27,7 +27,7 @@ export default function Login() {
     try {
       // It's assumed axios is imported, if not I will add it
       const { default: axios } = await import('axios');
-      const res = await axios.post("http://127.0.0.1:8000/login", {
+      const res = await axios.post(`${process.env.NEXT_PUBLIC_API_BASE || "https://abhishek-intern.onrender.com"}/login`, {
         username,
         password
       });

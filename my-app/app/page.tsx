@@ -66,7 +66,7 @@ export default function Home() {
     setResult(null);
 
     try {
-      const response = await axios.post("http://127.0.0.1:8000/register_student", {
+      const response = await axios.post(`${process.env.NEXT_PUBLIC_API_BASE || "https://abhishek-intern.onrender.com"}/register_student`, {
         student_id: formData.student_id,
         math_score: Number(formData.math_score),
         reading_score: Number(formData.reading_score),

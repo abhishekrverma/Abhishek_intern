@@ -53,7 +53,7 @@ export default function Signup() {
 
     try {
       const { default: axios } = await import("axios");
-      const res = await axios.post("http://127.0.0.1:8000/signup", {
+      const res = await axios.post(`${process.env.NEXT_PUBLIC_API_BASE || "https://abhishek-intern.onrender.com"}/signup`, {
         username: formData.username.trim(),
         email: formData.email.trim(),
         password: formData.password,
